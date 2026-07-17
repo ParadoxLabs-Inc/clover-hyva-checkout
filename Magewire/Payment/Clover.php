@@ -77,9 +77,12 @@ class Clover extends Form implements EvaluationInterface
     }
 
     /**
-     * Initialize component data on update
+     * Initialize component data on every request.
+     *
+     * booted() (not boot()) — it runs after property hydration, so the mutation to
+     * $this->storedCards is not clobbered by hydrated state on subsequent requests.
      */
-    public function boot(): void
+    public function booted(): void
     {
         $this->loadSelectedCard();
     }

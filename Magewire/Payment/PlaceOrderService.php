@@ -24,14 +24,23 @@ declare(strict_types=1);
 
 namespace ParadoxLabs\CloverHyvaCheckout\Magewire\Payment;
 
+use Exception;
+use Hyva\Checkout\Model\Magewire\Component\EvaluationResultFactory;
+use Hyva\Checkout\Model\Magewire\Component\EvaluationResultInterface;
 use Hyva\Checkout\Model\Magewire\Payment\AbstractPlaceOrderService;
 use Magento\Framework\Exception\CouldNotSaveException;
+use Magento\Framework\Exception\LocalizedException;
 use Magento\Quote\Api\Data\PaymentInterface;
 use Magento\Quote\Model\Quote;
+use Magewirephp\Magewire\Component;
 use ParadoxLabs\Clover\Model\Config\Config;
 
 class PlaceOrderService extends AbstractPlaceOrderService
 {
+    private bool $placementFailed = false;
+
+    private string $failureMessage = '';
+
     /**
      * Clover iframe SDK additional_data contract, mirroring the Luma renderer's getData():
      * exactly one of {token, card_id} populated per submit, plus the card metadata returned by
@@ -87,10 +96,73 @@ class PlaceOrderService extends AbstractPlaceOrderService
             PaymentInterface::KEY_ADDITIONAL_DATA => $knownPaymentData,
         ]);
 
-        // Re-stage the raw client keys for the second importData() (see docblock). In-memory
-        // only: none of these keys map to quote_payment columns.
+        // Re-stage the raw client keys for the second importData() (see docblock). Never
+        // persisted: cc_type/cc_exp_month/cc_exp_year ARE quote_payment columns, but the second
+        // import re-runs the observer over these same raw values before anything is saved, so
+        // the mapped column state after import #2 is identical to import #1. cc_type in
+        // particular MUST be re-staged as the raw brand: the observer's mapCcTypeToMagento()
+        // only understands raw brands, so replaying the already-mapped column value (or nothing,
+        // which re-imports the column value from getData()) would map to null and wipe it.
         $payment->addData($knownPaymentData);
 
         return parent::placeOrder($quote);
+    }
+
+    /**
+     * Accept placement failures instead of rethrowing.
+     *
+     * The default rethrow surfaces through Magewire's exception path
+     * (Controller/Post/Livewire::throwException), which returns bare {message, code} JSON with NO
+     * effects — the order:place:{method}:error browser events the processor queued just before
+     * calling this method would never reach the client, and in production the customer only gets
+     * a generic reload dialog instead of the decline message. Returning normally lets the request
+     * complete its regular lifecycle, so those queued events are delivered (the client uses them
+     * to drop the spent token) and the failure is surfaced as a friendly error message through
+     * evaluateCompletion() below.
+     */
+    public function handleException(Exception $exception, Component $component, Quote $quote): void
+    {
+        $this->placementFailed = true;
+
+        $this->failureMessage = $exception instanceof LocalizedException
+            ? $exception->getMessage()
+            : __('Something went wrong while processing your order. Please try again.')->render();
+    }
+
+    /**
+     * Report the buffered placement failure as a visible, non-fatal error message.
+     */
+    public function evaluateCompletion(
+        EvaluationResultFactory $resultFactory,
+        ?int $orderId = null,
+    ): EvaluationResultInterface {
+        if ($this->placementFailed || $orderId === null) {
+            $errorMessage = $resultFactory->createErrorMessage();
+            $errorMessage->withMessage(
+                $this->failureMessage !== ''
+                    ? $this->failureMessage
+                    : __('Something went wrong while processing your order. Please try again.')->render()
+            );
+            $errorMessage->withVisibilityDuration(10000);
+
+            return $errorMessage;
+        }
+
+        return parent::evaluateCompletion($resultFactory, $orderId);
+    }
+
+    /**
+     * Never redirect to the success page after a failed placement.
+     *
+     * Because handleException() no longer rethrows, the processor would otherwise push its
+     * unconditional PlaceOrderRedirect to checkout/onepage/success.
+     */
+    public function canRedirect(): bool
+    {
+        if ($this->placementFailed) {
+            return false;
+        }
+
+        return parent::canRedirect();
     }
 }

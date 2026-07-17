@@ -4,4 +4,5 @@
 
 Initial release: Clover SDK hosted payment fields support for Hyva Checkout, with stored cards
 (vault) and strict CSP/Alpine CSP compliance. Customer-account payment options (paymentinfo) are
-not yet supported on Hyva; the "My Payment Options" nav link is removed on Hyva themes.
+not yet supported on Hyva for Clover; the shared "My Payment Data" page shows an unavailable
+notice for Clover until its paymentinfo migration lands.

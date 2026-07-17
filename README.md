@@ -16,7 +16,8 @@ Requirements
 * Hyva Checkout (separate product and license), `hyva-themes/magento2-hyva-checkout` >= 1.3
 * `hyva-themes/magento2-theme-module` >= 1.3.11
 * `hyva-themes/magento2-payment-icons` >= 2.0
-* `paradoxlabs/clover` ^2.0
+* `paradoxlabs/clover` ^2.1 (the not-yet-released iframe-reliability line: hardened SDK loading,
+  locale support, tokenization error handling, idempotency keys)
 
 Features
 ========
@@ -53,8 +54,15 @@ Architecture
   path (the token itself survives via Clover's `additional_information` fallback).
 * Clover tokens are amount-agnostic; the charge amount is set server-side at sale (with
   idempotency-key request headers guarding retries), so no client-side total-drift handling is
-  required. A token cannot be reused after a failed charge — the
-  `order:place:paradoxlabs_clover:error` event clears it so the next attempt re-tokenizes.
+  required. A token cannot be reused after a failed charge — the new-card path re-tokenizes on
+  every validation pass, and the `order:place:paradoxlabs_clover:error` event clears any retained
+  token as belt-and-braces.
+* `PlaceOrderService::handleException()` accepts placement failures instead of rethrowing:
+  Magewire's exception path returns bare `{message, code}` JSON with no effects, which would drop
+  the queued `order:place:*:error` browser events and (in production) swallow the decline message
+  behind a generic reload dialog. The failure is surfaced as a friendly error message via
+  `evaluateCompletion()`, and `canRedirect()` suppresses the success redirect for the failed
+  attempt.
 
 Installation and Usage
 ======================
@@ -83,10 +91,12 @@ Pre-release Caveats / TODO
 * **No stored-card CVV re-entry.** The Clover CVV field only exists inside the SDK's hosted
   iframes and cannot be collected standalone; the Luma renderer likewise never prompts for CVV on
   stored cards, so this is intentional parity with the `require_ccv` behavior there.
-* **No customer-account payment options (paymentinfo) support.** The TokenBase "My Payment
-  Options" page is Luma-only for Clover; this module removes its nav link on Hyva themes
-  (`view/frontend/layout/hyva_customer_account.xml`). Implementing Hyva paymentinfo support is a
-  future task.
+* **No customer-account payment options (paymentinfo) support for Clover yet.** The shared
+  "My Payment Data" page (TokenBaseHyvaCheckout) works for gateways that have been migrated
+  (e.g. CyberSource, Stripe); Clover's add/edit pane there shows TokenBaseHyvaCheckout's
+  "not available" notice until its paymentinfo migration lands. The nav link is intentionally NOT
+  removed — it is shared across gateways and hiding it would break co-installed, already-migrated
+  methods.
 * **Repository push pending.** The `m2-clover-hyva-checkout` remote repository does not exist yet.
 
 License

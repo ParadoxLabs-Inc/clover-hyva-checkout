@@ -163,26 +163,52 @@ $inlineScript = <<<JS
 
                 return !!container && container.children.length > 0;
             },
+            clearFieldContainers: function() {
+                ['-cc-number', '-cc-exp', '-cc-cid', '-cc-postcode'].forEach(suffix => {
+                    const container = document.getElementById('{$code}' + suffix);
+
+                    if (container) {
+                        container.replaceChildren();
+                    }
+                });
+            },
             /**
-             * Create the hosted field iframes in the field containers. Elements are recreated on
-             * every (re)mount; the Clover instance itself is created once and reused.
+             * Create the hosted field iframes in the field containers. Mirroring the hardened Luma
+             * renderer, a NEW Clover instance is constructed on every actual mount. The instance
+             * that owns the currently mounted iframes is shared window-scoped, so a fresh Alpine
+             * initialization whose iframes survived a Magewire morph adopts it instead of
+             * dead-ending with mounted fields and no SDK handle.
              */
             mountHostedFields: function() {
-                if (this.selectedCard || this.isFormMounted()) {
+                if (this.selectedCard) {
                     return;
+                }
+
+                const state = window['{$code}State'] = window['{$code}State'] || {};
+
+                if (this.isFormMounted()) {
+                    if (!this.clover && state.clover) {
+                        this.clover = state.clover;
+                    }
+
+                    if (this.clover) {
+                        return;
+                    }
+
+                    // Mounted iframes with no owning instance are unusable; rebuild from scratch.
                 }
 
                 this.loadSdk()
                     .then(CloverSdk => {
-                        if (!this.clover) {
-                            this.clover = new CloverSdk(
-                                this.config.publicKey,
-                                {
-                                    merchantId: this.config.merchantId,
-                                    locale: this.config.locale || 'en-US'
-                                }
-                            );
-                        }
+                        this.clearFieldContainers();
+
+                        this.clover = state.clover = new CloverSdk(
+                            this.config.publicKey,
+                            {
+                                merchantId: this.config.merchantId,
+                                locale: this.config.locale || 'en-US'
+                            }
+                        );
 
                         const elements = this.clover.elements();
                         const style = this.config.formStyle || {};
@@ -210,6 +236,7 @@ $inlineScript = <<<JS
                     .catch(error => {
                         console.error(error);
                         this.clover = null;
+                        window['{$code}State'] = {};
                         this.error.general = '{$tLoadFailed}';
                     });
             },
@@ -249,12 +276,18 @@ $inlineScript = <<<JS
              * server receives a finished source token.
              */
             validateAndTokenize: function(event) {
+                // Settle any still-pending validation before adopting the new one, so an
+                // abandoned attempt (e.g. tokenization still in flight) can never hang or
+                // double-settle a later place-order pass.
+                if (this.promise.reject) {
+                    this.promise.reject(new Error('Superseded by a newer validation attempt.'));
+                }
+
                 this.promise.resolve = event.detail.resolve;
                 this.promise.reject  = event.detail.reject;
                 this.error.general   = '';
 
-                // A stored card, or an already-tokenized unchanged card, goes straight through.
-                if (this.selectedCard || this.token) {
+                if (this.selectedCard) {
                     this.submitPayload();
                     return;
                 }
@@ -265,6 +298,11 @@ $inlineScript = <<<JS
                 }
 
                 this.tokenizing = true;
+
+                // Always tokenize fresh for the new-card path — a previously retained token is
+                // never resubmitted, even if failed-placement error delivery was lost, because a
+                // spent (charged-and-declined) token cannot be reused.
+                this.token = '';
 
                 // createToken() may resolve with {token, card}, resolve with {errors: {...}}, or
                 // reject with a bare field-error map or an Error; handleToken normalizes all cases.
@@ -325,7 +363,12 @@ $inlineScript = <<<JS
 
                 hyvaCheckout.storage.setValue('payment', payload);
 
-                this.promise.resolve(true);
+                if (this.promise.resolve) {
+                    this.promise.resolve(true);
+                }
+
+                this.promise.resolve = null;
+                this.promise.reject = null;
             },
             failValidation: function(message) {
                 this.tokenizing = false;
@@ -335,6 +378,9 @@ $inlineScript = <<<JS
                 if (this.promise.reject) {
                     this.promise.reject(message);
                 }
+
+                this.promise.resolve = null;
+                this.promise.reject = null;
             },
             handleOrderError: function(event) {
                 // A token cannot be reused after a failed charge; require re-tokenization.

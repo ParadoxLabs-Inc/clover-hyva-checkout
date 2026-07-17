@@ -4,14 +4,20 @@ declare(strict_types=1);
 
 namespace ParadoxLabs\CloverHyvaCheckout\Test\Unit\Magewire\Payment;
 
+use Hyva\Checkout\Model\Magewire\Component\Evaluation\ErrorMessage;
+use Hyva\Checkout\Model\Magewire\Component\Evaluation\Success;
+use Hyva\Checkout\Model\Magewire\Component\EvaluationResultFactory;
 use Hyva\Checkout\Model\Magewire\Payment\DefaultOrderData;
+use Magento\Framework\Exception\LocalizedException;
 use Magento\Quote\Api\CartManagementInterface;
 use Magento\Quote\Api\Data\PaymentInterface;
 use Magento\Quote\Model\Quote;
 use Magento\Quote\Model\Quote\Payment as QuotePayment;
+use Magewirephp\Magewire\Component;
 use ParadoxLabs\CloverHyvaCheckout\Magewire\Payment\PlaceOrderService;
 use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
+use RuntimeException;
 
 /**
  * Unit tests for the Hyva Checkout PlaceOrderService
@@ -148,5 +154,84 @@ class PlaceOrderServiceTest extends TestCase
         $this->cartManagement->method('placeOrder')->willReturn('5');
 
         $this->assertSame(5, $this->service->placeOrder($this->quote));
+    }
+
+    public function testHandleExceptionDoesNotRethrow(): void
+    {
+        // Rethrowing would route through Magewire's effect-less exception response, dropping the
+        // order:place:*:error browser events and (in production) the decline message.
+        $component = $this->createMock(Component::class);
+
+        $this->service->handleException(
+            new LocalizedException(__('Your card was declined.')),
+            $component,
+            $this->quote
+        );
+
+        $this->assertFalse($this->service->canRedirect());
+    }
+
+    public function testEvaluateCompletionAfterFailureReturnsLocalizedErrorMessage(): void
+    {
+        $component = $this->createMock(Component::class);
+        $this->service->handleException(
+            new LocalizedException(__('Your card was declined.')),
+            $component,
+            $this->quote
+        );
+
+        $errorMessage = $this->createMock(ErrorMessage::class);
+        $errorMessage->expects($this->once())
+            ->method('withMessage')
+            ->with('Your card was declined.')
+            ->willReturnSelf();
+
+        $resultFactory = $this->createMock(EvaluationResultFactory::class);
+        $resultFactory->method('createErrorMessage')->willReturn($errorMessage);
+
+        $this->assertSame($errorMessage, $this->service->evaluateCompletion($resultFactory, null));
+    }
+
+    public function testEvaluateCompletionAfterFailureMasksNonLocalizedExceptionMessage(): void
+    {
+        $component = $this->createMock(Component::class);
+        $this->service->handleException(
+            new RuntimeException('SQLSTATE[23000]: something internal'),
+            $component,
+            $this->quote
+        );
+
+        $errorMessage = $this->createMock(ErrorMessage::class);
+        $errorMessage->expects($this->once())
+            ->method('withMessage')
+            ->with('Something went wrong while processing your order. Please try again.')
+            ->willReturnSelf();
+
+        $resultFactory = $this->createMock(EvaluationResultFactory::class);
+        $resultFactory->method('createErrorMessage')->willReturn($errorMessage);
+
+        $this->assertSame($errorMessage, $this->service->evaluateCompletion($resultFactory, null));
+    }
+
+    public function testEvaluateCompletionWithMissingOrderIdReturnsErrorMessage(): void
+    {
+        $errorMessage = $this->createMock(ErrorMessage::class);
+        $errorMessage->method('withMessage')->willReturnSelf();
+
+        $resultFactory = $this->createMock(EvaluationResultFactory::class);
+        $resultFactory->expects($this->once())->method('createErrorMessage')->willReturn($errorMessage);
+
+        $this->assertSame($errorMessage, $this->service->evaluateCompletion($resultFactory, null));
+    }
+
+    public function testEvaluateCompletionWithOrderIdReturnsSuccess(): void
+    {
+        $success = $this->createMock(Success::class);
+
+        $resultFactory = $this->createMock(EvaluationResultFactory::class);
+        $resultFactory->expects($this->once())->method('createSuccess')->willReturn($success);
+
+        $this->assertSame($success, $this->service->evaluateCompletion($resultFactory, 42));
+        $this->assertTrue($this->service->canRedirect());
     }
 }

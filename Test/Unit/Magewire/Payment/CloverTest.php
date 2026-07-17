@@ -90,7 +90,7 @@ class CloverTest extends TestCase
 
         $this->cardRepository->method('getById')->with('5')->willReturn($card);
 
-        $this->component->boot();
+        $this->component->booted();
 
         $this->assertArrayHasKey('hash456', $this->component->storedCards);
     }
@@ -104,7 +104,7 @@ class CloverTest extends TestCase
 
         $this->cardRepository->method('getById')->willReturn($card);
 
-        $this->component->boot();
+        $this->component->booted();
 
         $this->assertSame([], $this->component->storedCards);
     }
@@ -118,7 +118,7 @@ class CloverTest extends TestCase
 
         $this->cardRepository->method('getById')->willReturn($card);
 
-        $this->component->boot();
+        $this->component->booted();
 
         $this->assertSame([], $this->component->storedCards);
     }
@@ -129,7 +129,7 @@ class CloverTest extends TestCase
 
         $this->cardRepository->expects($this->never())->method('getById');
 
-        $this->component->boot();
+        $this->component->booted();
 
         $this->assertSame([], $this->component->storedCards);
     }
