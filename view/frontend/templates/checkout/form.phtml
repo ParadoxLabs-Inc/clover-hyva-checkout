@@ -1,0 +1,158 @@
+<?php declare(strict_types=1);
+
+/**
+ * Copyright © 2023-present ParadoxLabs, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * Need help? Try our knowledgebase and support system:
+ *
+ * @link https://support.paradoxlabs.com
+ */
+
+use Hyva\Theme\Model\ViewModelRegistry;
+use Magento\Framework\Escaper;
+use ParadoxLabs\CloverHyvaCheckout\Block\CheckoutTemplate;
+use ParadoxLabs\CloverHyvaCheckout\Magewire\Payment\Clover;
+use ParadoxLabs\CloverHyvaCheckout\ViewModel\PaymentForm;
+
+/** @var CheckoutTemplate $block */
+/** @var Clover $magewire */
+/** @var Escaper $escaper */
+/** @var ViewModelRegistry $viewModels */
+/** @var PaymentForm $formViewModel */
+
+$code = $escaper->escapeHtmlAttr($block->getMethodCode());
+$formViewModel = $viewModels->require(PaymentForm::class);
+$formBlock = $formViewModel->getFormBlock($code);
+$method = $formBlock->getMethod();
+$config = $block->getConfig();
+$image = $config['logoImage'] ?? false;
+
+// Method active but unavailable (e.g. missing keys): config is empty; render nothing.
+if (empty($config['publicKey'])) {
+    return;
+}
+?>
+<div class="<?= /* @noEscape */ $code ?>"
+     x-data="<?= /* @noEscape */ $code ?>PaymentForm"
+     x-init="initForm"
+     data-config="<?= $escaper->escapeHtmlAttr(json_encode($config)) ?>"
+>
+    <?php if ($image): ?>
+        <div class="flex justify-end mb-2">
+            <img src="<?= $escaper->escapeHtmlAttr($image); ?>"
+                 alt="<?= $escaper->escapeHtmlAttr(__('Processed by Clover')) ?>"
+                 width="150"
+                 height="37"
+            />
+        </div>
+    <?php endif; ?>
+
+    <div class="field required mb-2" x-show="showStoredCards" x-cloak>
+        <label for="<?= /* @noEscape */ $code ?>-card-id" class="label text-gray-700 text-sm">
+            <?= $escaper->escapeHtml(__('Payment Information')) ?>
+        </label>
+        <select id="<?= /* @noEscape */ $code ?>-card-id"
+                class="block w-full shadow-sm border-gray-300 rounded-md"
+                x-model="selectedCard"
+        >
+            <template x-for="storedCard in storedCards" :key="storedCard.hash">
+                <option :value="storedCard.hash"
+                        :data-type="storedCard.type"
+                        x-text="storedCard.label">
+                </option>
+            </template>
+            <option value=""><?= $escaper->escapeHtml(__('Add new card')) ?></option>
+        </select>
+    </div>
+
+    <!--
+        Clover SDK hosted-field containers. wire:ignore so Magewire DOM morphs never wipe the
+        mounted field iframes; lifecycle management happens in scripts.phtml.
+    -->
+    <div class="clover-hosted-fields grid gap-4"
+         x-show="showForm"
+         wire:ignore
+    >
+        <div class="field required">
+            <label for="<?= /* @noEscape */ $code ?>-cc-number" class="label text-gray-700 text-sm">
+                <?= $escaper->escapeHtml(__('Credit Card Number')) ?>
+            </label>
+            <div class="clover-hosted-field block w-full h-10 px-2 py-2 border border-gray-300 rounded-md shadow-sm bg-white"
+                 id="<?= /* @noEscape */ $code ?>-cc-number"></div>
+            <span class="text-red-600 text-sm" x-show="getCcNumError" x-text="getCcNumError" x-cloak></span>
+        </div>
+        <div class="field required">
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label for="<?= /* @noEscape */ $code ?>-cc-exp" class="label text-gray-700 text-sm">
+                        <?= $escaper->escapeHtml(__('Expiration')) ?>
+                    </label>
+                    <div class="clover-hosted-field block w-full h-10 px-2 py-2 border border-gray-300 rounded-md shadow-sm bg-white"
+                         id="<?= /* @noEscape */ $code ?>-cc-exp"></div>
+                </div>
+                <div>
+                    <label for="<?= /* @noEscape */ $code ?>-cc-cid" class="label text-gray-700 text-sm">
+                        <?= $escaper->escapeHtml(__('Security Code')) ?>
+                    </label>
+                    <div class="clover-hosted-field block w-full h-10 px-2 py-2 border border-gray-300 rounded-md shadow-sm bg-white"
+                         id="<?= /* @noEscape */ $code ?>-cc-cid"></div>
+                </div>
+            </div>
+            <span class="text-red-600 text-sm" x-show="getCcExpCvvError" x-text="getCcExpCvvError" x-cloak></span>
+        </div>
+        <div class="field required">
+            <label for="<?= /* @noEscape */ $code ?>-cc-postcode" class="label text-gray-700 text-sm">
+                <?= $escaper->escapeHtml(__('Zipcode')) ?>
+            </label>
+            <div class="clover-hosted-field block w-32 h-10 px-2 py-2 border border-gray-300 rounded-md shadow-sm bg-white"
+                 id="<?= /* @noEscape */ $code ?>-cc-postcode"></div>
+            <span class="text-red-600 text-sm" x-show="getCcZipError" x-text="getCcZipError" x-cloak></span>
+        </div>
+    </div>
+
+    <span class="text-red-600"
+          id="payment-error-general"
+          x-show="getErrorMessage"
+          x-text="getErrorMessage"
+          x-cloak
+    ></span>
+
+    <?php if (!$formBlock->isGuestCheckout()): ?>
+        <div x-show="showSaveOption"
+             x-cloak
+             class="flex items-center gap-2 mt-2"
+        >
+            <?php if ((bool)$method->getConfigData('allow_unsaved')): ?>
+                <input type="checkbox"
+                       title="<?= $escaper->escapeHtmlAttr(__('Save for next time')) ?>"
+                       class="cursor-pointer"
+                       id="<?= /* @noEscape */ $code ?>-save"
+                       name="payment[save]"
+                       x-model="save"
+                />
+                <label for="<?= /* @noEscape */ $code ?>-save"
+                       class="label text-gray-700 text-sm cursor-pointer">
+                    <?= $escaper->escapeHtml(__('Save for next time')) ?>
+                </label>
+            <?php else: ?>
+                <p class="text-secondary mt-4 text-sm"><?= $escaper->escapeHtml(
+                    __('For your convenience, this data will be stored securely by our payment processor.')
+                ) ?></p>
+            <?php endif; ?>
+        </div>
+    <?php endif; ?>
+
+    <?= /* @noEscape */ $block->getChildHtml(); ?>
+</div>

@@ -1,0 +1,367 @@
+<?php declare(strict_types=1);
+
+/**
+ * Copyright © 2023-present ParadoxLabs, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * Need help? Try our knowledgebase and support system:
+ *
+ * @link https://support.paradoxlabs.com
+ */
+
+use Magento\Framework\Escaper;
+use ParadoxLabs\CloverHyvaCheckout\Block\CheckoutTemplate;
+
+/** @var CheckoutTemplate $block */
+/** @var Escaper $escaper */
+/** @var Hyva\Theme\ViewModel\HyvaCsp $hyvaCsp */
+
+$code = $escaper->escapeJs($block->getMethodCode());
+
+$tLoadFailed = $escaper->escapeJs(__(
+    'The secure payment form failed to load. Please check for content blockers, then refresh the page to try again.'
+));
+$tCardFailed = $escaper->escapeJs(__('Unable to verify the card. Please check the card details and try again.'));
+
+$inlineScript = <<<JS
+    'use strict';
+
+    window.addEventListener('checkout:init:validation', event => {
+        hyvaCheckout.evaluation.registerValidator(
+            'validate{$code}',
+            async (element, component) => {
+                return new Promise((resolve, reject) => {
+                    window.dispatchEvent(
+                        new CustomEvent('checkout:validate:{$code}', {detail: {resolve, reject}})
+                    );
+                });
+            }
+        );
+    });
+
+    function {$code}PaymentForm() {
+        // -----------------------------------------------------------------------------------------
+        // additional_data contract (submitPayload()), mirroring the Luma renderer's getData():
+        //   New card    => token = <Clover source token> + card metadata from createToken()
+        //                  (cc_type/cc_exp_month/cc_exp_year/cc_last4/cc_bin), card_id = ''.
+        //   Stored card => card_id = <vault hash>.
+        // The card is tokenized in the validate stage, so place-order receives a finished token;
+        // Clover tokens are amount-agnostic — the charge amount is applied server-side at sale.
+        // -----------------------------------------------------------------------------------------
+        return {
+            storedCards: this.\$wire.entangle('storedCards'),
+            selectedCard: '',
+            save: true,
+            clover: null,
+            token: '',
+            card: {
+                type: '',
+                expMonth: '',
+                expYear: '',
+                last4: '',
+                bin: ''
+            },
+            tokenizing: false,
+            componentInitialized: false,
+            config: {},
+            fieldError: {
+                number: '',
+                expCvv: '',
+                zip: ''
+            },
+            error: {
+                general: ''
+            },
+            promise: {
+                resolve: null,
+                reject: null
+            },
+            initForm: function() {
+                if (this.componentInitialized) {
+                    return;
+                }
+
+                this.config = JSON.parse(this.\$el.dataset.config);
+                this.selectedCard = this.config.selectedCard || '';
+                this.save = this.config.canSaveCard
+                            && (this.config.forceSaveCard || this.config.defaultSaveCard);
+
+                // Store bound refs globally and remove-before-add: if Magewire replaces the root
+                // node, a fresh Alpine instance initializes and a stale listener set would double
+                // (and double-settle) the shared validation promise.
+                const listeners = window['{$code}Listeners'] = window['{$code}Listeners'] || {};
+
+                window.removeEventListener('checkout:validate:{$code}', listeners.validate);
+                listeners.validate = this.validateAndTokenize.bind(this);
+                window.addEventListener('checkout:validate:{$code}', listeners.validate);
+
+                // Dispatched by the Hyva place-order service processor on any placement failure;
+                // a charged-and-declined token is spent and must never be resubmitted.
+                window.removeEventListener('order:place:{$code}:error', listeners.orderError);
+                listeners.orderError = this.handleOrderError.bind(this);
+                window.addEventListener('order:place:{$code}:error', listeners.orderError);
+
+                // Hyva dispatches this on window (init-payment.phtml). Re-mount the hosted fields
+                // if a Magewire morph or method switch wiped the iframes.
+                window.removeEventListener('checkout:payment:method-activate', listeners.methodActivate);
+                listeners.methodActivate = this.handleMethodActivate.bind(this);
+                window.addEventListener('checkout:payment:method-activate', listeners.methodActivate);
+
+                this.\$watch('selectedCard', this.changeSelectedCard.bind(this));
+                this.mountHostedFields();
+
+                this.componentInitialized = true;
+            },
+            /**
+             * Load the Clover iframe SDK once per page, on demand, so a blocked/failed script
+             * (ad blocker, CSP, outage) surfaces as a visible error instead of a dead component.
+             * The script registers a window.Clover global; the shared window-scoped promise
+             * dedupes across Alpine re-initializations.
+             */
+            loadSdk: function() {
+                if (!window['{$code}SdkPromise']) {
+                    window['{$code}SdkPromise'] = new Promise((resolve, reject) => {
+                        if (typeof window.Clover === 'function') {
+                            resolve(window.Clover);
+                            return;
+                        }
+
+                        const script = document.createElement('script');
+                        script.src = this.config.sdkURL;
+                        script.type = 'text/javascript';
+                        script.addEventListener('load', () => {
+                            if (typeof window.Clover === 'function') {
+                                resolve(window.Clover);
+                            } else {
+                                reject(new Error('Clover iframe SDK failed to load.'));
+                            }
+                        });
+                        script.addEventListener('error', () => {
+                            // Allow a later mount attempt to retry the load.
+                            window['{$code}SdkPromise'] = null;
+                            reject(new Error('Clover iframe SDK failed to load.'));
+                        });
+                        document.head.append(script);
+                    });
+                }
+
+                return window['{$code}SdkPromise'];
+            },
+            isFormMounted: function() {
+                const container = document.getElementById('{$code}-cc-number');
+
+                return !!container && container.children.length > 0;
+            },
+            /**
+             * Create the hosted field iframes in the field containers. Elements are recreated on
+             * every (re)mount; the Clover instance itself is created once and reused.
+             */
+            mountHostedFields: function() {
+                if (this.selectedCard || this.isFormMounted()) {
+                    return;
+                }
+
+                this.loadSdk()
+                    .then(CloverSdk => {
+                        if (!this.clover) {
+                            this.clover = new CloverSdk(
+                                this.config.publicKey,
+                                {
+                                    merchantId: this.config.merchantId,
+                                    locale: this.config.locale || 'en-US'
+                                }
+                            );
+                        }
+
+                        const elements = this.clover.elements();
+                        const style = this.config.formStyle || {};
+
+                        const ccNumber = elements.create('CARD_NUMBER', style);
+                        const ccExp = elements.create('CARD_DATE', style);
+                        const ccCid = elements.create('CARD_CVV', style);
+                        const ccZip = elements.create('CARD_POSTAL_CODE', style);
+
+                        ccNumber.mount('#{$code}-cc-number');
+                        ccExp.mount('#{$code}-cc-exp');
+                        ccCid.mount('#{$code}-cc-cid');
+                        ccZip.mount('#{$code}-cc-postcode');
+
+                        const handler = this.handleFieldEvent.bind(this);
+
+                        [ccNumber, ccExp, ccCid, ccZip].forEach(element => {
+                            element.addEventListener('change', handler);
+                            element.addEventListener('blur', handler);
+                        });
+
+                        this.token = '';
+                        this.error.general = '';
+                    })
+                    .catch(error => {
+                        console.error(error);
+                        this.clover = null;
+                        this.error.general = '{$tLoadFailed}';
+                    });
+            },
+            /**
+             * Set or clear each touched field's error live, as the value changes (on both change
+             * and blur, which carry the same state shape).
+             */
+            handleFieldEvent: function(event) {
+                if (event.CARD_NUMBER && event.CARD_NUMBER.touched) {
+                    this.fieldError.number = event.CARD_NUMBER.error || '';
+                }
+
+                if (event.CARD_POSTAL_CODE && event.CARD_POSTAL_CODE.touched) {
+                    this.fieldError.zip = event.CARD_POSTAL_CODE.error || '';
+                }
+
+                if ((event.CARD_DATE && event.CARD_DATE.touched)
+                    || (event.CARD_CVV && event.CARD_CVV.touched)) {
+                    const dateError = (event.CARD_DATE && event.CARD_DATE.error) || '';
+                    const cvvError = (event.CARD_CVV && event.CARD_CVV.error) || '';
+
+                    this.fieldError.expCvv = (dateError + ' ' + cvvError).trim();
+                }
+
+                // Any change to the card data invalidates a previously created token
+                this.token = '';
+            },
+            handleMethodActivate: function(event) {
+                if (event && event.detail && event.detail.method === '{$code}') {
+                    // Defer a tick so the payment form is in the DOM before the mount check runs.
+                    window.setTimeout(this.mountHostedFields.bind(this), 0);
+                }
+            },
+            /**
+             * Hyva evaluation validator: settle payment data before place-order. A stored card
+             * passes through directly; a new card is tokenized via the Clover SDK here, so the
+             * server receives a finished source token.
+             */
+            validateAndTokenize: function(event) {
+                this.promise.resolve = event.detail.resolve;
+                this.promise.reject  = event.detail.reject;
+                this.error.general   = '';
+
+                // A stored card, or an already-tokenized unchanged card, goes straight through.
+                if (this.selectedCard || this.token) {
+                    this.submitPayload();
+                    return;
+                }
+
+                if (!this.clover || !this.isFormMounted()) {
+                    this.failValidation('{$tLoadFailed}');
+                    return;
+                }
+
+                this.tokenizing = true;
+
+                // createToken() may resolve with {token, card}, resolve with {errors: {...}}, or
+                // reject with a bare field-error map or an Error; handleToken normalizes all cases.
+                this.clover.createToken()
+                    .then(this.handleToken.bind(this))
+                    .catch(this.handleToken.bind(this));
+            },
+            handleToken: function(result) {
+                this.tokenizing = false;
+
+                if (result && result.token && result.card) {
+                    this.token = result.token;
+                    this.card.type = result.card.brand || '';
+                    this.card.expMonth = result.card.exp_month || '';
+                    this.card.expYear = result.card.exp_year || '';
+                    this.card.last4 = result.card.last4 || '';
+                    this.card.bin = result.card.first6 || '';
+
+                    this.submitPayload();
+                } else {
+                    this.token = '';
+                    this.failValidation(this.getTokenErrorMessage(result));
+                }
+            },
+            getTokenErrorMessage: function(result) {
+                // Normalize {errors: {FIELD: message}}, a bare {FIELD: message} map, and Error
+                // instances to one string.
+                let errors = result instanceof Error ? [result.message] : (result && result.errors) || result;
+
+                if (errors && typeof errors === 'object') {
+                    errors = Object.values(errors).filter(function (message) {
+                        return typeof message === 'string' && message.length > 0;
+                    });
+                }
+
+                if (Array.isArray(errors) && errors.length > 0) {
+                    return errors.join('; ');
+                }
+
+                return '{$tCardFailed}';
+            },
+            submitPayload: function() {
+                const payload = {
+                    method: '{$code}',
+                    save: this.save ? 1 : 0
+                };
+
+                if (this.selectedCard) {
+                    payload.card_id = this.selectedCard;
+                } else {
+                    payload.token = this.token;
+                    payload.cc_type = this.card.type;
+                    payload.cc_exp_month = this.card.expMonth;
+                    payload.cc_exp_year = this.card.expYear;
+                    payload.cc_last4 = this.card.last4;
+                    payload.cc_bin = this.card.bin;
+                }
+
+                hyvaCheckout.storage.setValue('payment', payload);
+
+                this.promise.resolve(true);
+            },
+            failValidation: function(message) {
+                this.tokenizing = false;
+                this.token = '';
+                this.error.general = message;
+
+                if (this.promise.reject) {
+                    this.promise.reject(message);
+                }
+            },
+            handleOrderError: function(event) {
+                // A token cannot be reused after a failed charge; require re-tokenization.
+                this.token = '';
+            },
+            changeSelectedCard: function() {
+                this.error.general = '';
+                this.token = '';
+
+                if (!this.selectedCard) {
+                    // Defer a tick so x-show reveals the containers before the mount check runs.
+                    window.setTimeout(this.mountHostedFields.bind(this), 0);
+                }
+            },
+            /* Getters for template bindings */
+            getCcNumError() {return this.fieldError.number},
+            getCcExpCvvError() {return this.fieldError.expCvv},
+            getCcZipError() {return this.fieldError.zip},
+            getErrorMessage() {return this.error.general},
+            showForm() {return !this.selectedCard},
+            showSaveOption() {return !this.selectedCard && this.config.canSaveCard},
+            showStoredCards() {return Object.keys(this.storedCards).length > 0}
+        }
+    }
+
+    window.addEventListener('alpine:init', () => Alpine.data('{$code}PaymentForm', {$code}PaymentForm), {once: true});
+JS;
+?>
+<script><?= /* @noEscape */ $inlineScript ?></script>
+<?php $hyvaCsp->registerInlineScript() ?>
