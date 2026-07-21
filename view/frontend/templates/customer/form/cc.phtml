@@ -1,0 +1,397 @@
+<?php declare(strict_types=1);
+
+/**
+ * Copyright © 2023-present ParadoxLabs, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * Need help? Try our knowledgebase and support system:
+ *
+ * @link https://support.paradoxlabs.com
+ */
+
+use Magento\Framework\Escaper;
+use Magento\Framework\View\Element\Template;
+use ParadoxLabs\Clover\Block\Customer\Form as CloverForm;
+use ParadoxLabs\Clover\Model\Config\Config;
+
+/**
+ * Clover SDK payment pane for the Hyva customer payment-options add/edit form.
+ *
+ * Rendered as the 'payment_pane' child of the shared TokenBaseHyvaCheckout form scaffold; mounts
+ * the Clover hosted fields when the scaffold announces the address step is confirmed, tears them
+ * down on address edit, and on Save tokenizes the entered card via clover.createToken(), writes
+ * the token + card metadata into the hidden inputs the TokenBase Save controller consumes, then
+ * submits the form.
+ *
+ * @var Template $block
+ * @var Escaper $escaper
+ * @var Hyva\Theme\ViewModel\HyvaCsp $hyvaCsp
+ */
+
+// The parent block is the retemplated Clover customer form block; it carries the gateway config.
+$formBlock = $block->getParentBlock();
+$code = $escaper->escapeHtmlAttr(Config::CODE);
+
+$paneConfig = [
+    'code' => Config::CODE,
+    'sdkURL' => $formBlock instanceof CloverForm ? $formBlock->getSdkUrl() : '',
+    'locale' => $formBlock instanceof CloverForm ? $formBlock->getCloverLocale() : 'en-US',
+    'merchantId' => $formBlock instanceof CloverForm
+        ? (string)$formBlock->getMethod()->getConfigData('merchant_id') : '',
+    'publicKey' => $formBlock instanceof CloverForm
+        ? (string)$formBlock->getMethod()->getConfigData('public_key') : '',
+    'formStyle' => $formBlock instanceof CloverForm
+        ? json_decode((string)$formBlock->getMethod()->getConfigData('form_style'), true) : [],
+];
+
+$tLoadFailed = $escaper->escapeJs(__(
+    'The secure payment form failed to load. Please check for content blockers, then refresh the page to try again.'
+));
+$tCardFailed = $escaper->escapeJs(__('Unable to verify the card. Please check the card details and try again.'));
+?>
+<fieldset class="mb-4"
+          x-data="<?= /* @noEscape */ $code ?>PaymentinfoPane"
+          data-config="<?= $escaper->escapeHtmlAttr((string)json_encode($paneConfig)) ?>"
+>
+    <legend class="text-lg font-medium mb-2"><?= $escaper->escapeHtml(__('Payment Information')) ?></legend>
+
+    <?php // Card metadata + single-use token; filled from createToken() just before submit. ?>
+    <input type="hidden" name="payment[token]" value=""/>
+    <input type="hidden" name="payment[cc_type]" value=""/>
+    <input type="hidden" name="payment[cc_bin]" value=""/>
+    <input type="hidden" name="payment[cc_last4]" value=""/>
+    <input type="hidden" name="payment[cc_exp_year]" value=""/>
+    <input type="hidden" name="payment[cc_exp_month]" value=""/>
+
+    <div class="clover-hosted-fields grid gap-4" wire:ignore>
+        <div class="field required">
+            <label for="<?= /* @noEscape */ $code ?>-cc-number" class="label text-gray-700 text-sm">
+                <?= $escaper->escapeHtml(__('Credit Card Number')) ?>
+            </label>
+            <div class="clover-hosted-field block w-full h-10 px-2 py-2 border border-gray-300 rounded-md shadow-sm bg-white"
+                 id="<?= /* @noEscape */ $code ?>-cc-number"></div>
+            <span class="text-red-600 text-sm" x-show="fieldError.number" x-text="fieldError.number" x-cloak></span>
+        </div>
+        <div class="field required">
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label for="<?= /* @noEscape */ $code ?>-cc-exp" class="label text-gray-700 text-sm">
+                        <?= $escaper->escapeHtml(__('Expiration')) ?>
+                    </label>
+                    <div class="clover-hosted-field block w-full h-10 px-2 py-2 border border-gray-300 rounded-md shadow-sm bg-white"
+                         id="<?= /* @noEscape */ $code ?>-cc-exp"></div>
+                </div>
+                <div>
+                    <label for="<?= /* @noEscape */ $code ?>-cc-cid" class="label text-gray-700 text-sm">
+                        <?= $escaper->escapeHtml(__('Security Code')) ?>
+                    </label>
+                    <div class="clover-hosted-field block w-full h-10 px-2 py-2 border border-gray-300 rounded-md shadow-sm bg-white"
+                         id="<?= /* @noEscape */ $code ?>-cc-cid"></div>
+                </div>
+            </div>
+            <span class="text-red-600 text-sm" x-show="fieldError.expCvv" x-text="fieldError.expCvv" x-cloak></span>
+        </div>
+        <div class="field required">
+            <label for="<?= /* @noEscape */ $code ?>-cc-postcode" class="label text-gray-700 text-sm">
+                <?= $escaper->escapeHtml(__('Zipcode')) ?>
+            </label>
+            <div class="clover-hosted-field block w-32 h-10 px-2 py-2 border border-gray-300 rounded-md shadow-sm bg-white"
+                 id="<?= /* @noEscape */ $code ?>-cc-postcode"></div>
+            <span class="text-red-600 text-sm" x-show="fieldError.zip" x-text="fieldError.zip" x-cloak></span>
+        </div>
+    </div>
+
+    <span class="text-red-600" x-show="error.general" x-text="error.general" x-cloak></span>
+
+    <div class="mt-6">
+        <button type="button"
+                class="btn btn-primary"
+                @click="save"
+                :disabled="tokenizing"
+        >
+            <span x-show="!tokenizing"><?= $escaper->escapeHtml(__('Save')) ?></span>
+            <span x-show="tokenizing" x-cloak><?= $escaper->escapeHtml(__('Saving...')) ?></span>
+        </button>
+    </div>
+</fieldset>
+
+<script>
+    'use strict';
+
+    (function () {
+        if (window.<?= /* @noEscape */ $code ?>PaymentinfoPaneRegistered) {
+            return;
+        }
+
+        window.<?= /* @noEscape */ $code ?>PaymentinfoPaneRegistered = true;
+
+        window.addEventListener('alpine:init', () => {
+            Alpine.data('<?= /* @noEscape */ $code ?>PaymentinfoPane', () => ({
+                config: {},
+                clover: null,
+                tokenizing: false,
+                fieldError: {number: '', expCvv: '', zip: ''},
+                error: {general: ''},
+
+                init() {
+                    this.config = JSON.parse(this.$el.dataset.config);
+
+                    window.addEventListener(
+                        this.config.code + 'PaymentinfoAddressConfirmed',
+                        this.handleAddressConfirmed.bind(this)
+                    );
+                    window.addEventListener(
+                        this.config.code + 'PaymentinfoAddressEdit',
+                        this.handleAddressEdit.bind(this)
+                    );
+                },
+
+                getForm() {
+                    return this.$el.closest('form');
+                },
+
+                handleAddressConfirmed() {
+                    this.mountHostedFields();
+                },
+
+                handleAddressEdit() {
+                    // Nothing entered survives an address edit; the customer re-confirms to re-mount.
+                    this.teardownHostedFields();
+                },
+
+                /**
+                 * Load the Clover iframe SDK once per page, on demand, so a blocked/failed script
+                 * (ad blocker, CSP, outage) surfaces as a visible error instead of a dead form.
+                 * The script registers a window.Clover global; the window-scoped promise dedupes
+                 * across Alpine re-initializations, and is cleared on error so a later mount retries.
+                 */
+                loadSdk() {
+                    const key = this.config.code + 'SdkPromise';
+
+                    if (!window[key]) {
+                        window[key] = new Promise((resolve, reject) => {
+                            if (typeof window.Clover === 'function') {
+                                resolve(window.Clover);
+
+                                return;
+                            }
+
+                            const script = document.createElement('script');
+                            script.src = this.config.sdkURL;
+                            script.type = 'text/javascript';
+                            script.addEventListener('load', () => {
+                                if (typeof window.Clover === 'function') {
+                                    resolve(window.Clover);
+                                } else {
+                                    reject(new Error('Clover iframe SDK failed to load.'));
+                                }
+                            });
+                            script.addEventListener('error', () => {
+                                window[key] = null;
+                                reject(new Error('Clover iframe SDK failed to load.'));
+                            });
+                            document.head.append(script);
+                        });
+                    }
+
+                    return window[key];
+                },
+
+                isFormMounted() {
+                    const container = document.getElementById(this.config.code + '-cc-number');
+
+                    return !!container && container.children.length > 0;
+                },
+
+                clearFieldContainers() {
+                    ['-cc-number', '-cc-exp', '-cc-cid', '-cc-postcode'].forEach(suffix => {
+                        const container = document.getElementById(this.config.code + suffix);
+
+                        if (container) {
+                            container.replaceChildren();
+                        }
+                    });
+                },
+
+                /**
+                 * Create the hosted field iframes. A NEW Clover instance is built on every mount,
+                 * mirroring the hardened checkout component; a stale mount with no owning instance
+                 * is rebuilt from scratch.
+                 */
+                mountHostedFields() {
+                    if (this.isFormMounted() && this.clover) {
+                        return;
+                    }
+
+                    this.loadSdk()
+                        .then(CloverSdk => {
+                            this.clearFieldContainers();
+
+                            this.clover = new CloverSdk(
+                                this.config.publicKey,
+                                {
+                                    merchantId: this.config.merchantId,
+                                    locale: this.config.locale || 'en-US'
+                                }
+                            );
+
+                            const elements = this.clover.elements();
+                            const style = this.config.formStyle || {};
+
+                            const ccNumber = elements.create('CARD_NUMBER', style);
+                            const ccExp = elements.create('CARD_DATE', style);
+                            const ccCid = elements.create('CARD_CVV', style);
+                            const ccZip = elements.create('CARD_POSTAL_CODE', style);
+
+                            ccNumber.mount('#' + this.config.code + '-cc-number');
+                            ccExp.mount('#' + this.config.code + '-cc-exp');
+                            ccCid.mount('#' + this.config.code + '-cc-cid');
+                            ccZip.mount('#' + this.config.code + '-cc-postcode');
+
+                            const handler = this.handleFieldEvent.bind(this);
+
+                            [ccNumber, ccExp, ccCid, ccZip].forEach(element => {
+                                element.addEventListener('change', handler);
+                                element.addEventListener('blur', handler);
+                            });
+
+                            this.error.general = '';
+                        })
+                        .catch(error => {
+                            console.error(error);
+                            this.clover = null;
+                            this.error.general = '<?= /* @noEscape */ $tLoadFailed ?>';
+                        });
+                },
+
+                /**
+                 * Set or clear each touched field's error live, as the value changes (change and
+                 * blur carry the same state shape). Any change invalidates a captured token.
+                 */
+                handleFieldEvent(event) {
+                    if (event.CARD_NUMBER && event.CARD_NUMBER.touched) {
+                        this.fieldError.number = event.CARD_NUMBER.error || '';
+                    }
+
+                    if (event.CARD_POSTAL_CODE && event.CARD_POSTAL_CODE.touched) {
+                        this.fieldError.zip = event.CARD_POSTAL_CODE.error || '';
+                    }
+
+                    if ((event.CARD_DATE && event.CARD_DATE.touched)
+                        || (event.CARD_CVV && event.CARD_CVV.touched)) {
+                        const dateError = (event.CARD_DATE && event.CARD_DATE.error) || '';
+                        const cvvError = (event.CARD_CVV && event.CARD_CVV.error) || '';
+
+                        this.fieldError.expCvv = (dateError + ' ' + cvvError).trim();
+                    }
+
+                    this.clearToken();
+                },
+
+                teardownHostedFields() {
+                    this.clover = null;
+                    this.clearFieldContainers();
+                    this.clearToken();
+                    this.fieldError = {number: '', expCvv: '', zip: ''};
+                    this.error.general = '';
+                },
+
+                /**
+                 * Tokenize the entered card and submit. A stored-card selection never reaches this
+                 * pane (the add/edit form is always new-card entry), so this always tokenizes fresh.
+                 */
+                save() {
+                    if (this.tokenizing) {
+                        return;
+                    }
+
+                    if (!this.clover || !this.isFormMounted()) {
+                        this.error.general = '<?= /* @noEscape */ $tLoadFailed ?>';
+
+                        return;
+                    }
+
+                    this.tokenizing = true;
+                    this.error.general = '';
+
+                    // Always tokenize fresh; a spent token can never be reused.
+                    this.clearToken();
+
+                    // createToken() may resolve with {token, card}, resolve with {errors: {...}}, or
+                    // reject with a bare field-error map or an Error; handleToken normalizes them.
+                    this.clover.createToken()
+                        .then(this.handleToken.bind(this))
+                        .catch(this.handleToken.bind(this));
+                },
+
+                handleToken(result) {
+                    this.tokenizing = false;
+
+                    if (result && result.token && result.card) {
+                        const form = this.getForm();
+
+                        this.setField(form, 'payment[token]', result.token);
+                        this.setField(form, 'payment[cc_type]', result.card.brand || '');
+                        this.setField(form, 'payment[cc_bin]', result.card.first6 || '');
+                        this.setField(form, 'payment[cc_last4]', result.card.last4 || '');
+                        this.setField(form, 'payment[cc_exp_year]', result.card.exp_year || '');
+                        this.setField(form, 'payment[cc_exp_month]', result.card.exp_month || '');
+
+                        form.submit();
+                    } else {
+                        this.clearToken();
+                        this.error.general = this.getTokenErrorMessage(result);
+                    }
+                },
+
+                getTokenErrorMessage(result) {
+                    // Normalize {errors: {FIELD: message}}, a bare {FIELD: message} map, and Error
+                    // instances to one string.
+                    let errors = result instanceof Error ? [result.message] : (result && result.errors) || result;
+
+                    if (errors && typeof errors === 'object') {
+                        errors = Object.values(errors).filter(function (message) {
+                            return typeof message === 'string' && message.length > 0;
+                        });
+                    }
+
+                    if (Array.isArray(errors) && errors.length > 0) {
+                        return errors.join('; ');
+                    }
+
+                    return '<?= /* @noEscape */ $tCardFailed ?>';
+                },
+
+                clearToken() {
+                    const form = this.getForm();
+
+                    if (form) {
+                        this.setField(form, 'payment[token]', '');
+                    }
+                },
+
+                setField(form, name, value) {
+                    const field = form ? form.querySelector('[name="' + name + '"]') : null;
+
+                    if (field) {
+                        field.value = value;
+                    }
+                },
+            }));
+        }, {once: true});
+    })();
+</script>
+<?php if (isset($hyvaCsp)): ?>
+    <?php $hyvaCsp->registerInlineScript() ?>
+<?php endif; ?>

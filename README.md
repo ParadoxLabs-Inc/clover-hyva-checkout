@@ -28,6 +28,8 @@ Features
 * Card entry is tokenized via the Clover SDK during the Hyva place-order validation stage; the
   server charges or stores the source token
 * Supports stored cards (vault) via ParadoxLabs_TokenBase
+* Customer-account "My Payment Data" add/edit/delete on Hyva themes (via
+  ParadoxLabs_TokenBaseHyvaCheckout), with the same Clover SDK hosted fields
 * Strict CSP and Alpine CSP compliant, for Hyva Checkout 1.3+ nonce-based CSP
 
 Architecture
@@ -63,6 +65,23 @@ Architecture
   behind a generic reload dialog. The failure is surfaced as a friendly error message via
   `evaluateCompletion()`, and `canRedirect()` suppresses the success redirect for the failed
   attempt.
+* Customer-account payment management (`customer/paymentinfo`) is delivered by the shared
+  ParadoxLabs_TokenBaseHyvaCheckout module (wrapper/tabs, card list + delete modal, two-step form
+  scaffold, shared `billing[...]` address fieldset). This module contributes only the Clover
+  specifics: `paradoxlabs_clover` is appended to the shared `SupportedMethods` view model
+  (`etc/frontend/di.xml`), and `hyva_customer_paymentinfo_index_paradoxlabs_clover.xml` retemplates
+  the method/cards/form blocks to the shared templates plus a `payment_pane` child
+  (`view/frontend/templates/customer/form/cc.phtml`). Retemplating (rather than remove-and-replace)
+  is safe because `ParadoxLabs\Clover\Block\Customer\Form` does not override `_toHtml()`/`_template`.
+  The pane mounts the Clover hosted fields on the scaffold's
+  `paradoxlabs_cloverPaymentinfoAddressConfirmed` window event, tears them down on
+  `...AddressEdit`, and on Save tokenizes via `clover.createToken()`, writes the token + card
+  metadata into the hidden `payment[token|cc_type|cc_bin|cc_last4|cc_exp_year|cc_exp_month]`
+  inputs, and submits the form (the card hash rides in the scaffold's hidden `id` field so an edit
+  updates the existing card). Requires an edit-path fix in `paradoxlabs/clover` `^2.1` so a
+  re-entered card actually re-tokenizes on edit (`PaymentMethodAssignDataObserver` now processes a
+  posted token on a `tokenbase_source=paymentinfo` save even when `card_id` identifies the edited
+  row).
 
 Installation and Usage
 ======================
@@ -86,17 +105,23 @@ Pre-release Caveats / TODO
 ==========================
 
 * **No runtime QA yet.** This module has not been exercised against a live Hyva Checkout install
-  or the Clover sandbox. Unit tests and static analysis pass, but end-to-end tokenization and
-  order placement remain to be verified in a browser.
+  or the Clover sandbox. Unit tests and static analysis pass, but the following remain to be
+  verified in a browser on a Hyva theme:
+    * Checkout: new-card tokenization + order placement; stored-card placement; decline message
+      surfacing; method switch re-mount.
+    * Payment options page (`customer/paymentinfo`): nav link present; tabs across 2+ active
+      methods; card list + delete confirm modal.
+    * Add card: address step -> Confirm Address -> hosted fields mount -> Save tokenizes ->
+      redirect + "Payment data saved successfully" message; card appears in the list.
+    * Edit card: form prefilled from the card address; re-entering a card and Saving updates the
+      existing row (not a duplicate) and refreshes the gateway token/expiry.
+    * Address edit after confirm tears the hosted fields down; re-confirm re-mounts cleanly.
+    * SDK load failure (blocked script) surfaces the visible retryable error instead of a dead
+      form; region switcher for US/CA/intl; `window.dispatchMessages` availability on the account
+      page.
 * **No stored-card CVV re-entry.** The Clover CVV field only exists inside the SDK's hosted
   iframes and cannot be collected standalone; the Luma renderer likewise never prompts for CVV on
   stored cards, so this is intentional parity with the `require_ccv` behavior there.
-* **No customer-account payment options (paymentinfo) support for Clover yet.** The shared
-  "My Payment Data" page (TokenBaseHyvaCheckout) works for gateways that have been migrated
-  (e.g. CyberSource, Stripe); Clover's add/edit pane there shows TokenBaseHyvaCheckout's
-  "not available" notice until its paymentinfo migration lands. The nav link is intentionally NOT
-  removed — it is shared across gateways and hiding it would break co-installed, already-migrated
-  methods.
 * **Repository push pending.** The `m2-clover-hyva-checkout` remote repository does not exist yet.
 
 License
