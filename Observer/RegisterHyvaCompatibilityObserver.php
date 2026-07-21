@@ -65,15 +65,7 @@ class RegisterHyvaCompatibilityObserver implements ObserverInterface
 
         $path = (string) $this->componentRegistrar->getPath(ComponentRegistrar::MODULE, $moduleName);
 
-        // ComponentRegistrar resolves registration.php's __DIR__ to a real path. On a normal install
-        // that path is under the Magento base dir, so we emit it relative to BP — the form the Hyvä
-        // tailwind tooling (@hyva-themes/hyva-modules) expects, since it does path.join(basePath, src).
-        //
-        // In dev these modules are frequently symlinked into app/code from outside BP (e.g. /mnt/c/...),
-        // so the real path is NOT under BP and a naive substr() yields a truncated, garbage src. Because
-        // path.join() does not honor absolute paths, emitting the absolute real path would not help
-        // either; instead we emit the app/code symlink location (which resolves back to the module) when
-        // that symlink is present and points at the same target.
+        // ComponentRegistrar resolves registration.php's __DIR__ to a real path. Handle symlinks as well.
         if (str_starts_with($path, BP . DIRECTORY_SEPARATOR)) {
             $src = substr($path, strlen(BP) + 1);
         } else {
