@@ -16,8 +16,8 @@ Requirements
 * Hyva Checkout (separate product and license), `hyva-themes/magento2-hyva-checkout` >= 1.3
 * `hyva-themes/magento2-theme-module` >= 1.3.11
 * `hyva-themes/magento2-payment-icons` >= 2.0
-* `paradoxlabs/clover` ^2.1 (the not-yet-released iframe-reliability line: hardened SDK loading,
-  locale support, tokenization error handling, idempotency keys)
+* `paradoxlabs/clover` ^2.1
+* `paradoxlabs/tokenbase-hyva-checkout` ^1.0 (shared Hyva payment-options scaffold)
 
 Features
 ========
@@ -28,7 +28,7 @@ Features
 * Card entry is tokenized via the Clover SDK during the Hyva place-order validation stage; the
   server charges or stores the source token
 * Supports stored cards (vault) via ParadoxLabs_TokenBase
-* Customer-account "My Payment Data" add/edit/delete on Hyva themes (via
+* Customer-account "My Payment Options" add/edit/delete on Hyva themes (via
   ParadoxLabs_TokenBaseHyvaCheckout), with the same Clover SDK hosted fields
 * Strict CSP and Alpine CSP compliant, for Hyva Checkout 1.3+ nonce-based CSP
 
@@ -101,30 +101,27 @@ In SSH at your Magento base directory, run:
 
 These commands will download and apply any available updates to the module.
 
-Pre-release Caveats / TODO
-==========================
+Known Limitations
+=================
 
-* **No runtime QA yet.** This module has not been exercised against a live Hyva Checkout install
-  or the Clover sandbox. Unit tests and static analysis pass, but the following remain to be
-  verified in a browser on a Hyva theme:
-    * Checkout: new-card tokenization + order placement; stored-card placement; decline message
-      surfacing; method switch re-mount.
-    * Payment options page (`customer/paymentinfo`): nav link present; tabs across 2+ active
-      methods; card list + delete confirm modal.
-    * Add card: address step -> Confirm Address -> hosted fields mount -> Save tokenizes ->
-      redirect + "Payment data saved successfully" message; card appears in the list.
-    * Edit card: form prefilled from the card address; re-entering a card and Saving updates the
-      existing row (not a duplicate) and refreshes the gateway token/expiry.
-    * Address edit after confirm tears the hosted fields down; re-confirm re-mounts cleanly.
-    * SDK load failure (blocked script) surfaces the visible retryable error instead of a dead
-      form; region switcher for US/CA/intl; `window.dispatchMessages` availability on the account
-      page.
-* **No stored-card CVV re-entry.** The Clover CVV field only exists inside the SDK's hosted
-  iframes and cannot be collected standalone; the Luma renderer likewise never prompts for CVV on
-  stored cards, so this is intentional parity with the `require_ccv` behavior there.
-* **Repository push pending.** The `m2-clover-hyva-checkout` remote repository does not exist yet.
+* No stored-card CVV re-entry. The Clover CVV field only exists inside the SDK's hosted iframes and cannot be
+  collected standalone. The Luma renderer likewise never prompts for CVV on stored cards, so this matches its
+  `require_ccv` behavior.
+
+Changelog
+=========
+
+Please see [CHANGELOG.md](CHANGELOG.md).
+
+Support
+=======
+
+This module is covered by your ParadoxLabs extension support plan. If you need help, open a ticket at
+[support.paradoxlabs.com](https://support.paradoxlabs.com). To renew support,
+[buy an extension support plan from ParadoxLabs](https://store.paradoxlabs.com/support-renewal.html).
 
 License
 =======
 
-Apache-2.0. See LICENSE.md.
+This module is proprietary software, licensed under the
+[ParadoxLabs software license](https://store.paradoxlabs.com/license.html). See license.txt.
