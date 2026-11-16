@@ -18,12 +18,5 @@
                 </arguments>
             </block>
         </referenceBlock>
-        <referenceContainer name="magewire.plugin.scripts">
-            <block class="ParadoxLabs\CloverHyvaCheckout\Block\CheckoutTemplate" name="script-paradoxlabs_clover" template="ParadoxLabs_CloverHyvaCheckout::checkout/scripts.phtml" ifconfig="payment/paradoxlabs_clover/active">
-                <arguments>
-                    <argument name="method_code" xsi:type="string">paradoxlabs_clover</argument>
-                </arguments>
-            </block>
-        </referenceContainer>
     </body>
 </page>
