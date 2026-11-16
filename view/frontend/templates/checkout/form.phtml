@@ -33,23 +33,22 @@ $image = $config['logoImage'] ?? false;
 
 // Method active but unavailable (e.g. missing keys): config is empty. Magewire requires a root
 // tag in every component template, so always emit one — returning before it would throw a
-// RootTagMissingFromViewException and break the whole payment step.
-if (empty($config['publicKey'])) {
-    ?>
-    <div class="<?= /* @noEscape */ $code ?>">
-        <p class="text-secondary text-sm">
-            <?= $escaper->escapeHtml(__('This payment method is currently unavailable. Please choose another.')) ?>
-        </p>
-    </div>
-    <?php
-    return;
-}
+// RootTagMissingFromViewException and break the whole payment step. Magewire 3 (Hyva Checkout 3.x)
+// also needs that root outside any condition, so branch inside it rather than returning early.
+$available = !empty($config['publicKey']);
 ?>
 <div class="<?= /* @noEscape */ $code ?>"
+    <?php if ($available): ?>
      x-data="<?= /* @noEscape */ $code ?>PaymentForm"
      x-init="initForm"
      data-config="<?= $escaper->escapeHtmlAttr(json_encode($config)) ?>"
+    <?php endif; ?>
 >
+    <?php if (!$available): ?>
+    <p class="text-secondary text-sm">
+        <?= $escaper->escapeHtml(__('This payment method is currently unavailable. Please choose another.')) ?>
+    </p>
+    <?php else: ?>
     <?php if ($image): ?>
         <div class="flex justify-end mb-2">
             <img src="<?= $escaper->escapeHtmlAttr($image); ?>"
@@ -159,4 +158,5 @@ if (empty($config['publicKey'])) {
     <?php endif; ?>
 
     <?= /* @noEscape */ $block->getChildHtml(); ?>
+    <?php endif; ?>
 </div>

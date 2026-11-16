@@ -1,5 +1,9 @@
 # ParadoxLabs_CloverHyvaCheckout Changelog
 
+## 1.1.0 - Nov 16, 2026
+
+- Added Hyva Checkout 3.x support (3.0.1+). Requires Hyva's `Hyva_CheckoutV1bc` module, enabled by default.
+
 ## 1.0.0 - Sep 15, 2026
 
 - Initial release: Clover payment support for Hyvä Checkout, using the Clover SDK hosted payment
