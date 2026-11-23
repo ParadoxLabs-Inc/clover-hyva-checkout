@@ -203,7 +203,16 @@ $inlineScript = <<<JS
                         );
 
                         const elements = this.clover.elements();
-                        const style = this.config.formStyle || {};
+                        // The wrapper div draws the field box; strip the input box from the Luma-oriented form_style.
+                        const style = Object.assign({}, this.config.formStyle || {});
+                        style.input = Object.assign({}, style.input || {}, {
+                            border: '0',
+                            borderRadius: '0',
+                            padding: '0',
+                            height: '22px',
+                            lineHeight: '22px',
+                            background: 'transparent'
+                        });
 
                         const ccNumber = elements.create('CARD_NUMBER', style);
                         const ccExp = elements.create('CARD_DATE', style);

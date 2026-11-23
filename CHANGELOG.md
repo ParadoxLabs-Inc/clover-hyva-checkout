@@ -4,6 +4,7 @@
 
 - Added Hyva Checkout 3.x support (3.0.1+), native to Magewire 3; Hyva's v1bc module is not required.
 - Now requires Hyva Checkout 1.3.6 or later on the 1.x line.
+- Fixed doubled, clipped card field borders and missing required markers on Expiration and Security Code.
 
 ## 1.0.0 - Sep 15, 2026
 
